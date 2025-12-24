@@ -1,0 +1,239 @@
+name: DAHAO Governance Node (Debug)
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'What should the node do?'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - vote_only
+          - propose
+          - respond
+
+permissions:
+  contents: read
+  discussions: write
+  issues: write
+
+env:
+  MAIN_REPO: "dahao-org/glitch-economy-simulation"
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  govern:
+    name: Run Governance Node
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 0. Debug: Show environment info
+      - name: Debug - Environment Info
+        run: |
+          echo "============================================"
+          echo "ENVIRONMENT DEBUG"
+          echo "============================================"
+          echo "Runner OS: ${{ runner.os }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Repository Owner: ${{ github.repository_owner }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Event: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "Main Repo Target: ${{ env.MAIN_REPO }}"
+          echo "Action Mode: ${{ github.event.inputs.action || 'auto' }}"
+          echo "============================================"
+
+      # 0.1 Debug: Check secrets (masked)
+      - name: Debug - Check Secrets Exist
+        run: |
+          echo "============================================"
+          echo "SECRETS CHECK"
+          echo "============================================"
+          if [ -n "${{ secrets.GH_PAT }}" ]; then
+            echo "✅ GH_PAT: Set (length: ${#GH_PAT_VAL})"
+          else
+            echo "❌ GH_PAT: NOT SET!"
+          fi
+          
+          if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then
+            echo "✅ GEMINI_API_KEY: Set"
+          else
+            echo "⚠️ GEMINI_API_KEY: Not set"
+          fi
+          
+          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then
+            echo "✅ OPENAI_API_KEY: Set"
+          else
+            echo "⚠️ OPENAI_API_KEY: Not set"
+          fi
+          
+          if [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "✅ ANTHROPIC_API_KEY: Set"
+          else
+            echo "⚠️ ANTHROPIC_API_KEY: Not set"
+          fi
+          echo "============================================"
+        env:
+          GH_PAT_VAL: ${{ secrets.GH_PAT }}
+
+      # 1. Checkout fork
+      - name: Checkout Fork
+        uses: actions/checkout@v4
+        with:
+          path: fork
+
+      # 1.1 Debug: Show fork structure
+      - name: Debug - Fork Structure
+        run: |
+          echo "============================================"
+          echo "FORK STRUCTURE"
+          echo "============================================"
+          echo "Fork path contents:"
+          ls -la fork/
+          echo ""
+          echo "Fork data/ contents:"
+          ls -la fork/data/ || echo "No data/ directory"
+          echo ""
+          echo "Fork src/ contents:"
+          ls -la fork/src/ || echo "No src/ directory"
+          echo "============================================"
+
+      # 2. Checkout main repo
+      - name: Checkout Main Repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MAIN_REPO }}
+          path: main
+          token: ${{ secrets.GH_PAT }}
+
+      # 2.1 Debug: Show main repo structure
+      - name: Debug - Main Repo Structure
+        run: |
+          echo "============================================"
+          echo "MAIN REPO STRUCTURE"
+          echo "============================================"
+          echo "Main path contents:"
+          ls -la main/
+          echo ""
+          echo "Main data/ contents:"
+          ls -la main/data/ || echo "No data/ directory"
+          echo "============================================"
+
+      # 3. Setup Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # 4. Install dependencies
+      - name: Install Dependencies
+        run: |
+          pip install requests python-dotenv
+          echo "✅ Dependencies installed"
+
+      # 5. Test GitHub API Access BEFORE running node
+      - name: Debug - Test GitHub API Access
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "============================================"
+          echo "GITHUB API ACCESS TEST"
+          echo "============================================"
+          
+          echo "1. Testing token validity (viewer query)..."
+          VIEWER_RESULT=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST https://api.github.com/graphql \
+            -d '{"query": "{ viewer { login } }"}')
+          echo "Viewer result: $VIEWER_RESULT"
+          
+          echo ""
+          echo "2. Testing main repo access..."
+          REPO_RESULT=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ env.MAIN_REPO }})
+          echo "Repo name: $(echo $REPO_RESULT | jq -r '.full_name')"
+          echo "Repo permissions: $(echo $REPO_RESULT | jq '.permissions')"
+          
+          echo ""
+          echo "3. Testing discussions access..."
+          DISC_QUERY='{"query": "query { repository(owner: \"dahao-org\", name: \"glitch-economy-simulation\") { discussions(first: 3) { nodes { number title } } } }"}'
+          DISC_RESULT=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST https://api.github.com/graphql \
+            -d "$DISC_QUERY")
+          echo "Discussions result: $DISC_RESULT"
+          
+          echo ""
+          echo "4. Testing discussion categories..."
+          CAT_QUERY='{"query": "query { repository(owner: \"dahao-org\", name: \"glitch-economy-simulation\") { discussionCategories(first: 10) { nodes { id name } } } }"}'
+          CAT_RESULT=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST https://api.github.com/graphql \
+            -d "$CAT_QUERY")
+          echo "Categories result: $CAT_RESULT"
+          
+          echo "============================================"
+
+      # 6. Run the governance node with verbose output
+      - name: Run Governance Node
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          WALLET_ADDRESS: ${{ secrets.WALLET_ADDRESS }}
+          FORK_PATH: ./fork
+          MAIN_PATH: ./main
+          ACTION_MODE: ${{ github.event.inputs.action || 'auto' }}
+          DEBUG: "true"
+        run: |
+          echo "============================================"
+          echo "RUNNING GOVERNANCE NODE"
+          echo "============================================"
+          python fork/src/node.py 2>&1 | tee node_output.log
+          echo ""
+          echo "============================================"
+          echo "NODE EXECUTION COMPLETE"
+          echo "============================================"
+
+      # 7. Debug: Show what happened
+      - name: Debug - Post-Run Analysis
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "============================================"
+          echo "POST-RUN ANALYSIS"
+          echo "============================================"
+          
+          echo "Checking recent discussion comments from ${{ github.actor }}..."
+          
+          # Get recent comments
+          COMMENTS_QUERY='{"query": "query { repository(owner: \"dahao-org\", name: \"glitch-economy-simulation\") { discussions(first: 5, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { number title comments(last: 3) { nodes { author { login } body createdAt } } } } } }"}'
+          
+          COMMENTS_RESULT=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST https://api.github.com/graphql \
+            -d "$COMMENTS_QUERY")
+          
+          echo "Recent comments:"
+          echo "$COMMENTS_RESULT" | jq '.data.repository.discussions.nodes[] | {number, title, comments: .comments.nodes}'
+          
+          echo "============================================"
+
+      # 8. Upload all logs
+      - name: Upload Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: governance-debug-log-${{ github.run_number }}
+          path: |
+            fork/*.log
+            node_output.log
+          retention-days: 7
